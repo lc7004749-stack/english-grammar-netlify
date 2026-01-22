@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemini 智能英语私教</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <script>
+      window.MathJax = {
+        tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']], processEscapes: true },
+        options: { ignoreHtmlClass: 'tex2jax_ignore', processHtmlClass: 'tex2jax_process' }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style id="app-styles">
+      body { font-family: "Inter", "Nunito", -apple-system, sans-serif; background: #f8f9fa; color: #334155; line-height: 1.6; }
+      .solution-card { 
+        background: white; 
+        border-radius: 20px; 
+        padding: 40px; 
+        margin-bottom: 30px; 
+        box-shadow: 0 4px 20px rgba(0,0,0,0.05); 
+        position: relative; /* 为右上角标签定位 */
+      }
+      
+      /* --- Tags Container --- */
+      .tags-container {
+        position: absolute;
+        top: 1.5rem;
+        right: 2.5rem;
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        max-width: 50%;
+      }
+
+      .level-tag { 
+        display: inline-block; 
+        padding: 4px 10px; 
+        border-radius: 6px; 
+        color: white; 
+        font-size: 11px; 
+        font-weight: 700; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      }
+      .level-tag.grammar { background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%); }
+      
+      /* --- Highlight Legend --- */
+      .highlight-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+        margin-bottom: 1.5rem;
+        padding: 10px 16px;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #f1f5f9;
+        font-size: 12px;
+        color: #64748b;
+        font-weight: 600;
+      }
+      .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+      .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+      /* --- Enhanced Grammar Highlighting Colors --- */
+      /* 主语 - 蓝色系 */
+      .subject-highlight { background: #bae6fd; padding: 1px 4px; border-radius: 4px; font-weight: 600; color: #0369a1; border-bottom: 2px solid #0ea5e9; }
+      .legend-dot.subject { background: #0ea5e9; box-shadow: 0 0 0 2px #bae6fd; }
+      
+      /* 谓语/动词 - 紫色系 */
+      .verb-highlight { background: #f3e8ff; padding: 1px 4px; border-radius: 4px; font-weight: 600; color: #7e22ce; border-bottom: 2px solid #9333ea; }
+      .legend-dot.verb { background: #9333ea; box-shadow: 0 0 0 2px #f3e8ff; }
+
+      /* 时态/时间状语 - 橙色系 */
+      .tense-highlight { background: #ffedd5; padding: 1px 4px; border-radius: 4px; font-weight: 600; color: #c2410c; border-bottom: 2px solid #f97316; }
+      .legend-dot.tense { background: #f97316; box-shadow: 0 0 0 2px #ffedd5; }
+
+      /* 宾语/关键点 - 绿色系 */
+      .object-highlight { background: #dcfce7; padding: 1px 4px; border-radius: 4px; font-weight: 600; color: #15803d; border-bottom: 2px solid #22c55e; }
+      .legend-dot.object { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
+
+      /* 普通强调 - 黄色系 */
+      .keyword-highlight { background: #fef08a; padding: 1px 4px; border-radius: 4px; font-weight: 600; color: #854d0e; border-bottom: 2px solid #eab308; }
+      .legend-dot.keyword { background: #eab308; box-shadow: 0 0 0 2px #fef08a; }
+
+      .original-problem { background: #f8fafc; padding: 24px; border-radius: 12px; margin: 24px 0; border-left: 4px solid #8b5cf6; border: 1px solid #e2e8f0; font-family: "Nunito", sans-serif; font-size: 1.1em; }
+      .grammar-analysis { background: linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%); padding: 24px; border-radius: 12px; margin: 24px 0; border-left: 5px solid #9333ea; border: 1px solid #d8b4fe; }
+      .grammar-analysis h4 { color: #6b21a8; margin-bottom: 12px; font-weight: 700; font-size: 1.15em; margin-top: 0; }
+      .reading-tips { background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); padding: 24px; border-radius: 12px; margin: 24px 0; border-left: 5px solid #f97316; border: 1px solid #fed7aa; }
+      
+      .analysis-item { display: flex; align-items: start; margin: 10px 0; padding: 12px 16px; background: rgba(255,255,255,0.8); border-radius: 8px; border: 1px solid rgba(147, 51, 234, 0.2); }
+      .analysis-item .icon { margin-right: 12px; font-size: 18px; line-height: 1.4; color: #7e22ce; font-weight: bold; }
+
+      .sentence-box { background: #fffbeb; color: #1e293b; padding: 20px 24px; border-radius: 8px; border: 2px solid #fcd34d; border-left: 8px solid #f59e0b; margin: 16px 0; }
+      .vocab-box { background: linear-gradient(135deg, #ecfccb 0%, #d9f99d 100%); padding: 20px; border-radius: 12px; margin: 24px 0; border: 1px solid #bef264; }
+      
+      /* --- Drills Styling --- */
+      .drills-content ol, .drills-content ul { padding-left: 1.5em; margin: 1em 0; }
+      .drills-content li { margin-bottom: 0.8em; }
+      .drills-content strong { color: #5b21b6; }
+      .drills-card {
+        background: #fff;
+        border: 1px solid #e0e7ff;
+        border-radius: 16px;
+        padding: 30px;
+        margin-top: 20px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      }
+
+      /* --- Switch Toggle Styling --- */
+      .toggle-checkbox:checked {
+        right: 0;
+        border-color: #6366f1;
+      }
+      .toggle-checkbox:checked + .toggle-label {
+        background-color: #6366f1;
+      }
+      
+      /* --- Print Styles Optimized for A4 --- */
+      @media print {
+        @page { 
+          size: A4; 
+          margin: 10mm 15mm; /* Reduced margins to fit more content */
+        }
+        
+        body { 
+          background: white !important; 
+          font-family: serif; 
+          color: black;
+          line-height: 1.4; /* Tighter line height for print */
+          font-size: 10.5pt; /* Optimal reading size that fits more */
+          -webkit-print-color-adjust: exact !important; 
+          print-color-adjust: exact !important; 
+          color-adjust: exact !important;
+        }
+
+        /* 隐藏打印时不需要的交互元素 */
+        header, footer, .lg\:col-span-5, .print-hidden, button, .toggle-checkbox, .toggle-label { 
+          display: none !important; 
+        }
+
+        /* 重置容器宽度和阴影，适配纸张 */
+        #root, .max-w-4xl, .solution-card {
+          width: 100% !important;
+          max-width: none !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          box-shadow: none !important;
+          border: none !important;
+        }
+
+        /* 紧凑化布局 */
+        .solution-card > div {
+           margin-bottom: 15px !important;
+           padding: 15px !important;
+           border: 1px solid #eee !important;
+        }
+
+        /* 1. 考点标签位置调整 */
+        .tags-container {
+          position: relative !important;
+          top: 0 !important;
+          right: 0 !important;
+          margin-bottom: 8px !important;
+          justify-content: flex-start !important;
+          page-break-inside: avoid;
+        }
+
+        /* 2. 关键：防止内容块内部被分页截断 */
+        .original-problem, 
+        .reading-tips, 
+        .grammar-analysis, 
+        .final-answer, 
+        .vocab-box, 
+        .highlight-legend,
+        .sentence-box,
+        .drill-item {
+          break-inside: avoid;       
+          page-break-inside: avoid;  
+          margin-bottom: 12px !important;
+          padding: 12px !important; /* Reduce padding for print */
+        }
+        
+        /* 保持高亮图例在一行 */
+        .highlight-legend {
+          display: flex !important;
+          flex-wrap: wrap !important;
+          gap: 8px !important;
+          padding: 5px !important;
+        }
+
+        /* 再次强制高亮词汇背景 */
+        .subject-highlight, .verb-highlight, .tense-highlight, .object-highlight, .keyword-highlight, .level-tag {
+           -webkit-print-color-adjust: exact !important;
+           print-color-adjust: exact !important;
+        }
+
+        /* --- 变式题专用打印模式 (由 JS 注入 Body class 控制) --- */
+        
+        /* 模式A：打印习题（学生版） - 隐藏答案区域 */
+        body.print-mode-student .drill-answer {
+           display: none !important;
+        }
+        
+        /* 模式B：打印答案（教师版） - 隐藏题目区域 */
+        body.print-mode-key .drill-question {
+           display: none !important;
+        }
+        
+        /* 【核心优化】：使用 CSS Grid 将答案双栏排列，大幅节省垂直空间 */
+        body.print-mode-key .drills-content {
+            display: grid !important;
+            grid-template-columns: repeat(2, 1fr) !important; /* 双栏布局 */
+            gap: 15px !important;
+            align-content: start !important;
+        }
+        
+        /* 让标题横跨两栏 */
+        body.print-mode-key .drills-content h1 {
+            grid-column: span 2 !important;
+            text-align: center !important;
+            margin-bottom: 15px !important;
+            font-size: 16pt !important;
+            border-bottom: 2px solid #333 !important;
+        }
+
+        body.print-mode-key .drill-item {
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 6px !important;
+            margin-bottom: 0 !important;
+            padding: 8px !important;
+            background: #f8fafc !important;
+            break-inside: avoid !important;
+        }
+
+        body.print-mode-key .drill-header {
+            margin-bottom: 4px !important;
+        }
+        
+        /* 关键修复：强制在打印时显示答案内容，忽略 details 的收起状态 */
+        body.print-mode-key .drill-answer {
+           display: block !important;
+           margin-top: 0 !important;
+        }
+        body.print-mode-key .drill-answer details {
+           display: block !important;
+        }
+        body.print-mode-key .drill-answer summary {
+           display: none !important; /* 打印时不显示"查看解析"按钮 */
+        }
+        body.print-mode-key .drill-answer details > div {
+           display: block !important; /* 强制显示内部的答案 DIV */
+           position: static !important;
+           visibility: visible !important;
+           opacity: 1 !important;
+           height: auto !important;
+           padding: 5px !important; /* 紧凑 padding */
+           border: none !important;
+           background: transparent !important;
+           font-size: 9pt !important; /* 稍微调小字体以适配 */
+        }
+        
+        /* 紧凑化段落间距 */
+        body.print-mode-key .drill-answer p {
+            margin-bottom: 2px !important;
+        }
+
+        /* 标题处理 */
+        h1, h2, h3 { page-break-after: avoid; }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="./src/main.tsx"></script>
+</body>
+</html>
