@@ -313,3 +313,35 @@ export const generateSpeech = async (solutionHtml: string): Promise<string> => {
     return json?.audio_base64 || "";
   });
 };
+// ================== 兼容 App.tsx 的补齐导出 ==================
+
+// base64 解码（给 TTS / 音频用）
+export function decodeBase64(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// PCM → AudioBuffer（如果 UI 里用到了）
+export function decodePcmAudio(
+  pcmData: Uint8Array,
+  sampleRate = 24000
+): AudioBuffer {
+  const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const buffer = audioCtx.createBuffer(1, pcmData.length, sampleRate);
+  const channelData = buffer.getChannelData(0);
+
+  for (let i = 0; i < pcmData.length; i++) {
+    channelData[i] = (pcmData[i] - 128) / 128;
+  }
+  return buffer;
+}
+
+// 兼容旧调用名：generateSpeech → 实际调用 TTS
+export async function generateSpeech(html: string): Promise<string> {
+  return await (await import("./geminiService")).generateSpeech(html);
+}
