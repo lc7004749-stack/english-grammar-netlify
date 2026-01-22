@@ -22,11 +22,21 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetry = 2): Promise<T> {
       return await fn();
     } catch (e: any) {
       lastErr = e;
-      // 对 502/504 这种网关/超时，等一等再试最有效
+      // 对超时/网关类问题，稍等重试最有效
       await sleep(Math.min(4000, 600 * Math.pow(2, i)));
     }
   }
   throw lastErr;
+}
+
+function env(name: string, fallback = ""): string {
+  return ((import.meta as any).env?.[name] as string) || fallback;
+}
+
+function requiredEnv(name: string): string {
+  const v = env(name);
+  if (!v) throw new Error(`Missing env: ${name}. 请在 Netlify 环境变量里配置它（VITE_ 前缀）。`);
+  return v;
 }
 
 function toDataUrl(base64: string, mime: string) {
@@ -73,20 +83,59 @@ function looksLikeMarkdown(s: string): boolean {
   return false;
 }
 
-// —— 这里是和 Netlify Function 的对接：直接把 OpenAI payload 发过去 ——
-// 你的 llm function 只要能转发到 API_BASE/chat/completions 即可。
-async function callLLMChatCompletions(payload: any): Promise<any> {
-  const res = await fetch("/.netlify/functions/llm", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+function normalizeBaseUrl(base: string) {
+  return base.replace(/\/$/, "");
+}
 
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || `LLM HTTP ${res.status}`);
+async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text().catch(() => "");
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      // data 维持 null
+    }
+
+    if (!res.ok) {
+      // 把上游错误尽量说清楚
+      const detail = data?.error || data || text || `HTTP ${res.status}`;
+      throw new Error(`Upstream ${res.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 1500)}`);
+    }
+
+    return data ?? text;
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new Error(`请求超时（>${timeoutMs}ms）。建议：缩短输出/分批生成/检查中转响应速度。`);
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return await res.json();
+}
+
+/**
+ * 直连你的 OpenAI 兼容中转：/chat/completions
+ */
+async function callChatCompletions(payload: any, timeoutMs = 30000): Promise<any> {
+  const API_BASE = normalizeBaseUrl(requiredEnv("VITE_API_BASE"));
+  const API_KEY = requiredEnv("VITE_API_KEY");
+
+  const url = `${API_BASE}/chat/completions`;
+
+  return await fetchJsonWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    },
+    timeoutMs
+  );
 }
 
 /** 题干核对/纠错（纯文本） */
@@ -98,17 +147,19 @@ export const verifyProblem = async (options: SolveOptions): Promise<string> => {
 
   return await withRetry(async () => {
     const payload = {
-      model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+      model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
       messages: buildUserMessage(prompt, options),
       temperature: 0.2,
-      max_tokens: 600,
+      max_tokens: 700,
     };
-    const json = await callLLMChatCompletions(payload);
-    return pickContent(json).trim();
+    const json = await callChatCompletions(payload, 25000);
+    const out = (pickContent(json) || "").trim();
+    if (!out) throw new Error("题干核对返回为空（content 为空）。");
+    return out;
   });
 };
 
-/** 深度解析（输出 HTML 片段，且不要高亮空） */
+/** 深度解析（HTML 片段，空位不高亮，口吻五六年级） */
 export const solveProblem = async (options: SolveOptions): Promise<string> => {
   const basePrompt = `你是“资深英语私教”，面向五六年级学生讲解。
 
@@ -125,80 +176,78 @@ original-problem / reading-tips / grammar-analysis / final-answer
 subject-highlight / verb-highlight / tense-highlight / object-highlight / keyword-highlight
 
 【关键修正：填空/选择的“空位”不要高亮】
-- 题目中的空（如 ______ 或 ____ 或 ( )）必须保持为纯下划线/括号，不要用任何 <span class="..."> 包裹。
+- 题目中的空（如 ______ / ____ / ( ) ）必须保持为纯下划线/括号文本，不要用任何 <span class="..."> 包裹。
 - 选项 A/B/C/D 的字母、以及空格占位不要高亮。
 - 只高亮“题面里真实出现的词”（如 It / rains / often / in / summer / Does 等）。
 
 【输出结构必须包含】
-1) 右上角考点标签
-2) 图例（legend）
-3) original-problem：原句+题目要求+填空处（空不高亮）
-4) reading-tips：2-3 条，表达更像五六年级（少幼稚比喻，多规则+例子）
+1) tags-container：考点标签（2-3个）
+2) highlight-legend：图例
+3) original-problem：原句+题目要求+填空（空不高亮）
+4) reading-tips：2-3 条，表达更像五六年级（规则+依据+易错点）
 5) grammar-analysis：语气不幼稚，讲“规则→例句→常见坑”
 6) final-answer：简洁答案
-
-【五六年级口吻要求】
-- 避免“举个栗子/小怪兽/糖果”这类过幼稚比喻
-- 用“规则/信号词/动词原形/三单/助动词”这类更自然的讲法
-- 例句保留，但更像课堂讲解
 
 【题目】（图片优先，其次文字）：`;
 
   const firstTry = await withRetry(async () => {
     const payload = {
-      model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+      model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
       messages: buildUserMessage(basePrompt, options),
       temperature: 0.25,
-      max_tokens: 1600,
+      max_tokens: 1700,
     };
-    const json = await callLLMChatCompletions(payload);
-    return stripCodeFences(pickContent(json));
-  });
+    const json = await callChatCompletions(payload, 30000);
+    const html = stripCodeFences(pickContent(json));
+    if (!html || !html.trim()) throw new Error("深度解析返回为空（content 为空）。");
+    return html;
+  }, 2);
 
   if (!looksLikeMarkdown(firstTry)) return firstTry;
 
-  // 兜底纠偏：如果仍像 Markdown，则强制改写为 HTML
   const repairPrompt = `你的输出含 Markdown 痕迹（如 **、#、-、\`\`\` 等）。请改写成【纯 HTML 片段】：
 - 必须 <div 开头 </div> 结尾
 - 严禁任何 Markdown 符号
-- 保持原结构（tags-container、highlight-legend、original-problem、reading-tips、grammar-analysis、final-answer）
+- 保持结构（tags-container、highlight-legend、original-problem、reading-tips、grammar-analysis、final-answer）
 - “空位”不要高亮（下划线保持纯文本）
 【待改写内容】：
 ${firstTry}`;
 
   return await withRetry(async () => {
     const payload = {
-      model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+      model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
       messages: [{ role: "user", content: repairPrompt }],
       temperature: 0.1,
-      max_tokens: 1600,
+      max_tokens: 1700,
     };
-    const json = await callLLMChatCompletions(payload);
-    return stripCodeFences(pickContent(json));
-  });
+    const json = await callChatCompletions(payload, 25000);
+    const html = stripCodeFences(pickContent(json));
+    if (!html || !html.trim()) throw new Error("深度解析纠偏后仍为空（content 为空）。");
+    return html;
+  }, 1);
 };
 
 /** 错题本报告（HTML 片段） */
 export const analyzeProblemHistory = async (problems: SavedProblem[]): Promise<string> => {
   const prompt = `你是教研员。输出一份【学习诊断报告】纯 HTML 片段（严禁 Markdown）。
-包含：常错点、原因推断、建议练法、下次复习重点。适合家长阅读。
-只输出 HTML。
+包含：常错点、原因推断、建议练法、下次复习重点。适合家长阅读。只输出 HTML。
 题库JSON：\n${JSON.stringify(problems).slice(0, 120000)}`;
 
   return await withRetry(async () => {
     const payload = {
-      model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+      model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
       messages: [{ role: "user", content: prompt }],
       temperature: 0.4,
       max_tokens: 1400,
     };
-    const json = await callLLMChatCompletions(payload);
-    return stripCodeFences(pickContent(json));
-  });
+    const json = await callChatCompletions(payload, 30000);
+    const html = stripCodeFences(pickContent(json));
+    if (!html || !html.trim()) throw new Error("错题本报告返回为空（content 为空）。");
+    return html;
+  }, 2);
 };
 
-// —— 把 HTML 压缩成更短的“语义上下文”，避免变式训练超时 ——
-// 只提取核心信息，避免把整页 HTML 扔给模型
+// —— 把 HTML 压缩成更短“要点”，避免变式训练慢 —— 
 function summarizeContextForDrills(solutionHtml: string) {
   const txt = (solutionHtml || "")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -206,17 +255,16 @@ function summarizeContextForDrills(solutionHtml: string) {
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return txt.slice(0, 900); // 关键：缩短上下文，减少超时概率
+  return txt.slice(0, 900);
 }
 
-/** 变式训练（更稳：6题拆成两次各3题） */
+/** 变式训练：6题拆成两次各3题，显著降低超时概率 */
 export const generateDrills = async (
   originalProblem: string,
   solutionContextHtml: string
 ): Promise<string> => {
   const shortCtx = summarizeContextForDrills(solutionContextHtml);
 
-  // 生成 3 题的 prompt（减少一次请求耗时）
   const prompt3 = (batchIndex: 1 | 2) => `你是一位小学英语语法老师，面向五六年级。
 围绕“原题”生成【3道同型变式训练】并给出答案解析（本批次：第${batchIndex}批，共2批）。
 必须输出【纯 HTML 片段】，严禁 Markdown（**、#、-、\`\`\`、~~~ 都不许出现）。
@@ -231,13 +279,15 @@ export const generateDrills = async (
   const callBatch = async (batch: 1 | 2) => {
     const first = await withRetry(async () => {
       const payload = {
-        model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+        model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
         messages: [{ role: "user", content: prompt3(batch) }],
         temperature: 0.55,
         max_tokens: 1500,
       };
-      const json = await callLLMChatCompletions(payload);
-      return stripCodeFences(pickContent(json));
+      const json = await callChatCompletions(payload, 35000);
+      const html = stripCodeFences(pickContent(json));
+      if (!html || !html.trim()) throw new Error(`变式训练第${batch}批返回为空（content 为空）。`);
+      return html;
     }, 3);
 
     if (!looksLikeMarkdown(first)) return first;
@@ -250,45 +300,60 @@ ${first}`;
 
     return await withRetry(async () => {
       const payload = {
-        model: (import.meta as any).env.VITE_LLM_MODEL || "gpt-4o-mini",
+        model: env("VITE_LLM_MODEL", "gpt-4o-mini"),
         messages: [{ role: "user", content: fixPrompt }],
         temperature: 0.1,
         max_tokens: 1500,
       };
-      const json = await callLLMChatCompletions(payload);
-      return stripCodeFences(pickContent(json));
+      const json = await callChatCompletions(payload, 25000);
+      const html = stripCodeFences(pickContent(json));
+      if (!html || !html.trim()) throw new Error(`变式训练第${batch}批纠偏后仍为空（content 为空）。`);
+      return html;
     }, 2);
   };
 
-  // 两批拼接（这样即使第二批偶尔超时，第一批也更容易成功）
   const part1 = await callBatch(1);
   const part2 = await callBatch(2);
   return `${part1}\n${part2}`;
 };
 
-/** TTS（可选） */
+/** TTS：浏览器直连中转 /audio/speech（你的中转若不支持会返回可读错误） */
 export const generateSpeech = async (solutionHtml: string): Promise<string> => {
+  const API_BASE = normalizeBaseUrl(requiredEnv("VITE_API_BASE"));
+  const API_KEY = requiredEnv("VITE_API_KEY");
+
   const text = (solutionHtml || "")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1200);
 
-  return await withRetry(async () => {
-    const res = await fetch("/.netlify/functions/tts", {
+  const url = `${API_BASE}/audio/speech`;
+
+  const payload = {
+    model: env("VITE_TTS_MODEL", "gpt-4o-mini-tts"),
+    voice: env("VITE_TTS_VOICE", "alloy"),
+    input: `我来讲解：${text}`,
+    format: "mp3",
+  };
+
+  const res = await fetchJsonWithTimeout(
+    url,
+    {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: `我来讲解：${text}` }),
-    });
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    },
+    35000
+  );
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(txt || `TTS HTTP ${res.status}`);
-    }
-
-    const json = await res.json();
-    return json?.audio_base64 || "";
-  }, 2);
+  // 有些中转返回 base64，有些返回二进制（此处按 JSON base64 处理）
+  const b64 = (res as any)?.audio_base64;
+  if (!b64) throw new Error("TTS 返回不包含 audio_base64（你的中转可能不支持 /audio/speech）。");
+  return b64;
 };
 
 // ===== App.tsx 兼容导出：避免 build missing export =====
@@ -308,4 +373,8 @@ export function decodePcmAudio(pcmData: Uint8Array, sampleRate = 24000): AudioBu
     channel[i] = (pcmData[i] - 128) / 128;
   }
   return buffer;
+}
+
+function normalizeBaseUrl(base: string) {
+  return base.replace(/\/$/, "");
 }
