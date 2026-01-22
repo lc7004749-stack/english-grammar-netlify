@@ -340,8 +340,3 @@ export function decodePcmAudio(
   }
   return buffer;
 }
-
-// 兼容旧调用名：generateSpeech → 实际调用 TTS
-export async function generateSpeech(html: string): Promise<string> {
-  return await (await import("./geminiService")).generateSpeech(html);
-}
